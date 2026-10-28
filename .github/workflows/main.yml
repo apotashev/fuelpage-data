@@ -1,0 +1,40 @@
+# Зеркало открытых данных MIMIT (Италия, цены на топливо) для Fuelpage.
+# Сервер mimit.gov.it не отвечает из Испании и Нидерландов, а с GitHub доступен.
+# Дважды в день: скачать два CSV, сжать и положить в it/. Сервер Fuelpage читает их как запасной источник.
+name: MIMIT mirror
+
+on:
+  schedule:
+    - cron: "15 7 * * *"    # 09:15 по Риму летом — файл «prezzo alle 8» уже опубликован
+    - cron: "15 12 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download
+        run: |
+          set -euo pipefail
+          mkdir -p it
+          for f in anagrafica_impianti_attivi prezzo_alle_8; do
+            curl -fsSL --retry 5 --retry-delay 20 --connect-timeout 30 -m 600 \
+              -o "/tmp/$f.csv" "https://www.mimit.gov.it/images/exportCSV/$f.csv"
+            head -c 40 "/tmp/$f.csv"; echo
+            # Защита от пустой или обрезанной выгрузки: в настоящих файлах тысячи строк.
+            [ "$(wc -l < "/tmp/$f.csv")" -gt 1000 ] || { echo "Подозрительно короткий $f"; exit 1; }
+            gzip -9 -n -c "/tmp/$f.csv" > "it/$f.csv.gz"
+          done
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > it/updated_at.txt
+      - name: Commit
+        run: |
+          git config user.name "fuelpage-bot"
+          git config user.email "fuelpage-bot@users.noreply.github.com"
+          git add it
+          git diff --cached --quiet && echo "Без изменений" && exit 0
+          git commit -m "MIMIT $(date -u +%Y-%m-%d)"
+          git push
