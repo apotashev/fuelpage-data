@@ -18,19 +18,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Download
+        id: dl
         run: |
-          set -euo pipefail
+          set -uo pipefail
           mkdir -p it
+          # MIMIT часто недоступен по многу дней: это не ошибка зеркала, а пропуск запуска без письма о сбое.
           for f in anagrafica_impianti_attivi prezzo_alle_8; do
-            curl -fsSL --retry 5 --retry-delay 20 --connect-timeout 30 -m 600 \
-              -o "/tmp/$f.csv" "https://www.mimit.gov.it/images/exportCSV/$f.csv"
-            head -c 40 "/tmp/$f.csv"; echo
+            if ! curl -fsSL --retry 2 --retry-delay 20 --connect-timeout 30 -m 600 \
+                 -o "/tmp/$f.csv" "https://www.mimit.gov.it/images/exportCSV/$f.csv"; then
+              echo "::warning::MIMIT недоступен ($f) — пропускаем, попробуем в следующий раз"
+              echo "skip=1" >> "$GITHUB_OUTPUT"; exit 0
+            fi
             # Защита от пустой или обрезанной выгрузки: в настоящих файлах тысячи строк.
-            [ "$(wc -l < "/tmp/$f.csv")" -gt 1000 ] || { echo "Подозрительно короткий $f"; exit 1; }
-            gzip -9 -n -c "/tmp/$f.csv" > "it/$f.csv.gz"
+            if [ "$(wc -l < "/tmp/$f.csv")" -le 1000 ]; then
+              echo "::warning::Подозрительно короткий $f — пропускаем"
+              echo "skip=1" >> "$GITHUB_OUTPUT"; exit 0
+            fi
           done
+          for f in anagrafica_impianti_attivi prezzo_alle_8; do gzip -9 -n -c "/tmp/$f.csv" > "it/$f.csv.gz"; done
           date -u +"%Y-%m-%dT%H:%M:%SZ" > it/updated_at.txt
       - name: Commit
+        if: steps.dl.outputs.skip != '1'
         run: |
           git config user.name "fuelpage-bot"
           git config user.email "fuelpage-bot@users.noreply.github.com"
